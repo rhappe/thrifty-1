@@ -58,10 +58,10 @@ import com.squareup.javapoet.FieldSpec;
 import com.squareup.javapoet.JavaFile;
 import com.squareup.javapoet.MethodSpec;
 import com.squareup.javapoet.NameAllocator;
+import com.squareup.javapoet.ParameterSpec;
 import com.squareup.javapoet.ParameterizedTypeName;
 import com.squareup.javapoet.TypeName;
 import com.squareup.javapoet.TypeSpec;
-
 import org.joda.time.format.DateTimeFormatter;
 import org.joda.time.format.ISODateTimeFormat;
 
@@ -69,6 +69,10 @@ import javax.annotation.Nullable;
 import javax.lang.model.element.Modifier;
 import java.io.File;
 import java.io.IOException;
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -97,6 +101,7 @@ public final class ThriftyCodeGenerator {
     private boolean emitAndroidAnnotations;
     private boolean emitParcelable;
     private boolean emitFileComment = true;
+    private boolean emitIntEnums;
 
     public ThriftyCodeGenerator(Schema schema) {
         this(schema, FieldNamingPolicy.DEFAULT);
@@ -161,6 +166,11 @@ public final class ThriftyCodeGenerator {
 
     public ThriftyCodeGenerator emitFileComment(boolean emitFileComment) {
         this.emitFileComment = emitFileComment;
+        return this;
+    }
+
+    public ThriftyCodeGenerator emitIntEnums(boolean emitIntEnums) {
+        this.emitIntEnums = emitIntEnums;
         return this;
     }
 
@@ -1053,6 +1063,89 @@ public final class ThriftyCodeGenerator {
     @VisibleForTesting
     @SuppressWarnings("WeakerAccess")
     TypeSpec buildEnum(EnumType type) {
+        if (emitIntEnums) {
+            return buildIntEnum(type);
+        } else {
+            return buildJavaEnum(type);
+        }
+    }
+
+    private TypeSpec buildIntEnum(EnumType type) {
+        ClassName enumClassName = ClassName.get(
+                type.getNamespaceFor(NamespaceScope.JAVA),
+                type.name());
+
+        TypeSpec.Builder builder = TypeSpec.annotationBuilder(enumClassName)
+                .addModifiers(Modifier.PUBLIC)
+                .addAnnotation(AnnotationSpec.builder(Retention.class)
+                        .addMember("value", "$T.SOURCE", RetentionPolicy.class)
+                        .build())
+                .addAnnotation(AnnotationSpec.builder(Target.class)
+                        .addMember(
+                                "value",
+                                "{$1T.PARAMETER,$W$1T.METHOD,$W$1T.LOCAL_VARIABLE,$W$1T.FIELD}",
+                                ElementType.class)
+                        .build());
+
+        CodeBlock.Builder intDefValuesBuilder = CodeBlock.builder();
+        intDefValuesBuilder.add("{");
+
+        if (type.hasJavadoc()) {
+            builder.addJavadoc(type.documentation());
+        }
+
+        if (type.isDeprecated()) {
+            builder.addAnnotation(AnnotationSpec.builder(Deprecated.class).build());
+        }
+
+        MethodSpec.Builder nameOfBuilder = MethodSpec.methodBuilder("of")
+                .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
+                .returns(TypeNames.STRING)
+                .addParameter(ParameterSpec.builder(TypeName.INT, "value")
+                        .addAnnotation(enumClassName)
+                        .build())
+                .beginControlFlow("switch (value)");
+
+        boolean first = true;
+        for (EnumMember enumMember : type.members()) {
+            builder.addField(FieldSpec.builder(TypeName.INT, enumMember.name())
+                    .addModifiers(Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL)
+                    .initializer("$L", enumMember.value())
+                    .build());
+
+            nameOfBuilder.addStatement("case $L: return $S", enumMember.value(), enumMember.name());
+
+            if (first) {
+                first = false;
+                intDefValuesBuilder.add("$T.$L", enumClassName, enumMember.name());
+            } else {
+                intDefValuesBuilder.add(",$W$T.$L", enumClassName, enumMember.name());
+            }
+        }
+
+        nameOfBuilder.addStatement("default: return null");
+        nameOfBuilder.endControlFlow(); // end switch
+
+        intDefValuesBuilder.add("}");
+
+        TypeSpec helper = TypeSpec.classBuilder("Names")
+                .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
+                .addMethod(MethodSpec.constructorBuilder()
+                        .addModifiers(Modifier.PRIVATE)
+                        .addComment("no instances")
+                        .build())
+                .addMethod(nameOfBuilder.build())
+                .build();
+
+        return builder
+                .addType(helper)
+                .addAnnotation(AnnotationSpec.builder(ClassName.get("android.support.annotations", "IntDef"))
+                        .addMember("value", intDefValuesBuilder.build())
+                        .build())
+                .build();
+    }
+
+    private TypeSpec buildJavaEnum(EnumType type) {
         ClassName enumClassName = ClassName.get(
                 type.getNamespaceFor(NamespaceScope.JAVA),
                 type.name());
