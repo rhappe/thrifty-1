@@ -42,6 +42,10 @@ import com.squareup.javapoet.TypeName;
 import okio.ByteString;
 
 import java.io.IOException;
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
 import java.net.ProtocolException;
 import java.util.Collections;
 import java.util.List;
@@ -104,6 +108,13 @@ final class TypeNames {
     static final ClassName PARCELABLE_CREATOR = ClassName.get("android.os", "Parcelable", "Creator");
 
     static final ClassName OBFUSCATION_UTIL = ClassName.get(ObfuscationUtil.class);
+
+    static final ClassName DEPRECATED = ClassName.get(Deprecated.class);
+    static final ClassName RETENTION = ClassName.get(Retention.class);
+    static final ClassName RETENTION_POLICY = ClassName.get(RetentionPolicy.class);
+    static final ClassName TARGET = ClassName.get(Target.class);
+    static final ClassName ELEMENT_TYPE = ClassName.get(ElementType.class);
+    static final ClassName INT_DEF = ClassName.get("android.support.annotation", "IntDef");
 
     /**
      * A mapping of {@link TType} constant values to their Java names.

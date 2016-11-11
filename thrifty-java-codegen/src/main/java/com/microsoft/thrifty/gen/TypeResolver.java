@@ -54,6 +54,8 @@ final class TypeResolver {
     private ClassName setClass = ClassName.get(HashSet.class);
     private ClassName mapClass = ClassName.get(HashMap.class);
 
+    private boolean intEnums;
+
     void setListClass(ClassName listClass) {
         this.listClass = listClass;
     }
@@ -64,6 +66,10 @@ final class TypeResolver {
 
     void setMapClass(ClassName mapClass) {
         this.mapClass = mapClass;
+    }
+
+    void setIntEnums(boolean intEnums) {
+        this.intEnums = intEnums;
     }
 
     byte getTypeCode(ThriftType thriftType) {
@@ -143,14 +149,14 @@ final class TypeResolver {
         @Override
         public TypeName visitList(ListType listType) {
             ThriftType elementType = listType.elementType().getTrueType();
-            TypeName elementTypeName = elementType.accept(this);
+            TypeName elementTypeName = getElementTypeName(elementType);
             return ParameterizedTypeName.get(TypeNames.LIST, elementTypeName);
         }
 
         @Override
         public TypeName visitSet(SetType setType) {
             ThriftType elementType = setType.elementType().getTrueType();
-            TypeName elementTypeName = elementType.accept(this);
+            TypeName elementTypeName = getElementTypeName(elementType);
             return ParameterizedTypeName.get(TypeNames.SET, elementTypeName);
         }
 
@@ -159,8 +165,8 @@ final class TypeResolver {
             ThriftType keyType = mapType.keyType().getTrueType();
             ThriftType valueType = mapType.valueType().getTrueType();
 
-            TypeName keyTypeName = keyType.accept(this);
-            TypeName valueTypeName = valueType.accept(this);
+            TypeName keyTypeName = getElementTypeName(keyType);
+            TypeName valueTypeName = getElementTypeName(valueType);
             return ParameterizedTypeName.get(TypeNames.MAP, keyTypeName, valueTypeName);
         }
 
@@ -192,6 +198,14 @@ final class TypeResolver {
                 nameCache.put(key, cn);
             }
             return cn;
+        }
+
+        private TypeName getElementTypeName(ThriftType elementType) {
+            if (intEnums && elementType.isEnum()) {
+                return TypeNames.INTEGER;
+            } else {
+                return elementType.accept(this);
+            }
         }
     };
 

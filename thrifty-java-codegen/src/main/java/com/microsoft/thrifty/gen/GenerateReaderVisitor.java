@@ -58,13 +58,20 @@ class GenerateReaderVisitor implements ThriftType.Visitor<Void> {
     private MethodSpec.Builder read;
     private String fieldName;
     private ThriftType fieldType;
+    private boolean intEnums;
     private int scope;
 
-    GenerateReaderVisitor(TypeResolver resolver, MethodSpec.Builder read, String fieldName, ThriftType fieldType) {
+    GenerateReaderVisitor(
+            TypeResolver resolver,
+            MethodSpec.Builder read,
+            String fieldName,
+            ThriftType fieldType,
+            boolean intEnums) {
         this.resolver = resolver;
         this.read = read;
         this.fieldName = fieldName;
         this.fieldType = fieldType;
+        this.intEnums = intEnums;
     }
 
     public void generate() {
@@ -149,7 +156,11 @@ class GenerateReaderVisitor implements ThriftType.Visitor<Void> {
     public Void visitEnum(EnumType enumType) {
         String target = nameStack.peek();
         String qualifiedJavaName = getFullyQualifiedJavaName(enumType);
-        read.addStatement("$1L $2N = $1L.findByValue(protocol.readI32())", qualifiedJavaName, target);
+        if (intEnums) {
+            read.addStatement("@$L $T $N = protocol.readI32()", qualifiedJavaName, TypeNames.INTEGER, target);
+        } else {
+            read.addStatement("$1L $2N = $1L.findByValue(protocol.readI32())", qualifiedJavaName, target);
+        }
         return null;
     }
 
@@ -157,8 +168,8 @@ class GenerateReaderVisitor implements ThriftType.Visitor<Void> {
     public Void visitList(ListType listType) {
         initNameAllocator();
 
-        TypeName elementType = resolver.getJavaClass(listType.elementType().getTrueType());
-        TypeName genericListType = ParameterizedTypeName.get(TypeNames.LIST, elementType);
+        ParameterizedTypeName genericListType = getCollectionName(listType);
+        TypeName elementType = genericListType.typeArguments.get(0);
         TypeName listImplType = resolver.listOf(elementType);
 
         String listInfo = "listMetadata" + scope;
@@ -188,8 +199,8 @@ class GenerateReaderVisitor implements ThriftType.Visitor<Void> {
     public Void visitSet(SetType setType) {
         initNameAllocator();
 
-        TypeName elementType = resolver.getJavaClass(setType.elementType().getTrueType());
-        TypeName genericSetType = ParameterizedTypeName.get(TypeNames.SET, elementType);
+        ParameterizedTypeName genericSetType = getCollectionName(setType);
+        TypeName elementType = genericSetType.typeArguments.get(0);
         TypeName setImplType = resolver.setOf(elementType);
 
         String setInfo = "setMetadata" + scope;
@@ -219,9 +230,9 @@ class GenerateReaderVisitor implements ThriftType.Visitor<Void> {
     public Void visitMap(MapType mapType) {
         initNameAllocator();
 
-        TypeName keyType = resolver.getJavaClass(mapType.keyType().getTrueType());
-        TypeName valueType = resolver.getJavaClass(mapType.valueType().getTrueType());
-        TypeName genericMapType = ParameterizedTypeName.get(TypeNames.MAP, keyType, valueType);
+        ParameterizedTypeName genericMapType = getCollectionName(mapType);
+        TypeName keyType = genericMapType.typeArguments.get(0);
+        TypeName valueType = genericMapType.typeArguments.get(1);
         TypeName mapImplType = resolver.mapOf(keyType, valueType);
 
         String mapInfo = "mapMetadata" + scope;
@@ -278,6 +289,10 @@ class GenerateReaderVisitor implements ThriftType.Visitor<Void> {
 
         String packageName = type.getNamespaceFor(NamespaceScope.JAVA);
         return packageName + "." + type.name();
+    }
+
+    private ParameterizedTypeName getCollectionName(ThriftType type) {
+        return (ParameterizedTypeName) resolver.getJavaClass(type);
     }
 
     private void initNameAllocator() {

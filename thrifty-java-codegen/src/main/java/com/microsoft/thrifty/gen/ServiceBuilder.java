@@ -29,7 +29,6 @@ import com.microsoft.thrifty.schema.NamespaceScope;
 import com.microsoft.thrifty.schema.ServiceMethod;
 import com.microsoft.thrifty.schema.ServiceType;
 import com.microsoft.thrifty.schema.ThriftType;
-import com.squareup.javapoet.AnnotationSpec;
 import com.squareup.javapoet.ClassName;
 import com.squareup.javapoet.CodeBlock;
 import com.squareup.javapoet.FieldSpec;
@@ -48,11 +47,14 @@ final class ServiceBuilder {
     private final TypeResolver typeResolver;
     private final ConstantBuilder constantBuilder;
     private final FieldNamer fieldNamer;
+    private final boolean intEnums;
 
-    ServiceBuilder(TypeResolver typeResolver, ConstantBuilder constantBuilder, FieldNamer fieldNamer) {
+    ServiceBuilder(
+            TypeResolver typeResolver, ConstantBuilder constantBuilder, FieldNamer fieldNamer, boolean intEnums) {
         this.typeResolver = typeResolver;
         this.constantBuilder = constantBuilder;
         this.fieldNamer = fieldNamer;
+        this.intEnums = intEnums;
     }
 
     TypeSpec buildServiceInterface(ServiceType service) {
@@ -64,7 +66,7 @@ final class ServiceBuilder {
         }
 
         if (service.isDeprecated()) {
-            serviceSpec.addAnnotation(AnnotationSpec.builder(Deprecated.class).build());
+            serviceSpec.addAnnotation(Deprecated.class);
         }
 
         if (service.extendsService() != null) {
@@ -90,18 +92,28 @@ final class ServiceBuilder {
                 ThriftType paramType = field.type().getTrueType();
                 TypeName paramTypeName = typeResolver.getJavaClass(paramType);
 
-                methodBuilder.addParameter(paramTypeName, name);
+                ParameterSpec.Builder paramBuilder;
+                if (intEnums && paramType.isEnum()) {
+                    paramBuilder = ParameterSpec.builder(TypeNames.INTEGER, name)
+                            .addAnnotation((ClassName) paramTypeName);
+                } else {
+                    paramBuilder = ParameterSpec.builder(paramTypeName, name);
+                }
+
+                methodBuilder.addParameter(paramBuilder.build());
 
             }
 
             String callbackName = allocator.newName("callback", ++tag);
 
-            ThriftType returnType = method.returnType();
+            ThriftType returnType = method.returnType().getTrueType();
             TypeName returnTypeName;
             if (returnType.equals(BuiltinType.VOID)) {
                 returnTypeName = TypeName.VOID.box();
+            } else if (intEnums && returnType.isEnum()) {
+                returnTypeName = TypeNames.INTEGER;
             } else {
-                returnTypeName = typeResolver.getJavaClass(returnType.getTrueType());
+                returnTypeName = typeResolver.getJavaClass(returnType);
             }
 
             TypeName callbackInterfaceName = ParameterizedTypeName.get(
@@ -160,7 +172,7 @@ final class ServiceBuilder {
                     body.add("$N", parameter.name);
                     first = false;
                 } else {
-                    body.add(", $N", parameter.name);
+                    body.add(",$W$N", parameter.name);
                 }
             }
 
@@ -186,10 +198,16 @@ final class ServiceBuilder {
             name += "Call";
         }
 
-        ThriftType returnType = method.returnType();
-        TypeName returnTypeName = returnType.equals(BuiltinType.VOID)
-                ? TypeName.VOID.box()
-                : typeResolver.getJavaClass(returnType.getTrueType());
+        ThriftType returnType = method.returnType().getTrueType();
+        TypeName returnTypeName;
+        if (returnType.equals(BuiltinType.VOID)) {
+            returnTypeName = TypeName.VOID.box();
+        } else if (intEnums && returnType.isEnum()) {
+            returnTypeName = TypeNames.INTEGER;
+        } else {
+            returnTypeName = typeResolver.getJavaClass(returnType);
+        }
+
         TypeName callbackTypeName = ParameterizedTypeName.get(TypeNames.SERVICE_CALLBACK, returnTypeName);
         TypeName superclass = ParameterizedTypeName.get(TypeNames.SERVICE_METHOD_CALL, returnTypeName);
 
@@ -201,11 +219,22 @@ final class ServiceBuilder {
 
         // Set up fields
         for (Field field : method.parameters()) {
-            TypeName javaType = typeResolver.getJavaClass(field.type().getTrueType());
+            ThriftType thriftType = field.type().getTrueType();
+            TypeName javaType = typeResolver.getJavaClass(thriftType);
 
-            callBuilder.addField(FieldSpec.builder(javaType, fieldNamer.getName(field))
-                    .addModifiers(Modifier.PRIVATE, Modifier.FINAL)
-                    .build());
+            FieldSpec fieldSpec;
+            if (intEnums && thriftType.isEnum()) {
+                fieldSpec = FieldSpec.builder(TypeNames.INTEGER, fieldNamer.getName(field))
+                        .addModifiers(Modifier.PRIVATE, Modifier.FINAL)
+                        .addAnnotation((ClassName) javaType)
+                        .build();
+            } else {
+                fieldSpec = FieldSpec.builder(javaType, fieldNamer.getName(field))
+                        .addModifiers(Modifier.PRIVATE, Modifier.FINAL)
+                        .build();
+            }
+
+            callBuilder.addField(fieldSpec);
         }
 
         // Ctor
@@ -232,9 +261,19 @@ final class ServiceBuilder {
 
         for (Field field : method.parameters()) {
             String fieldName = fieldNamer.getName(field);
+            ThriftType thriftType = field.type().getTrueType();
             TypeName javaType = typeResolver.getJavaClass(field.type().getTrueType());
 
-            ctor.addParameter(javaType, fieldName);
+            ParameterSpec paramSpec;
+            if (intEnums && thriftType.isEnum()) {
+                paramSpec = ParameterSpec.builder(TypeNames.INTEGER, fieldName)
+                        .addAnnotation((ClassName) javaType)
+                        .build();
+            } else {
+                paramSpec = ParameterSpec.builder(javaType, fieldName).build();
+            }
+
+            ctor.addParameter(paramSpec);
 
             if (field.required() && field.defaultValue() == null) {
                 ctor.addStatement("if ($L == null) throw new NullPointerException($S)", fieldName, fieldName);
@@ -250,7 +289,7 @@ final class ServiceBuilder {
                         allocator,
                         scope,
                         "this." + fieldName,
-                        field.type().getTrueType(),
+                        thriftType,
                         field.defaultValue(),
                         false);
                 ctor.addCode(init.build());
@@ -296,7 +335,7 @@ final class ServiceBuilder {
                     TypeNames.TTYPE,
                     TypeNames.getTypeCodeName(typeCode));
 
-            tt.accept(new GenerateWriterVisitor(typeResolver, send, "protocol", "this", fieldName));
+            tt.accept(new GenerateWriterVisitor(typeResolver, send, intEnums, "protocol", "this", fieldName));
 
             send.addStatement("protocol.writeFieldEnd()");
 
@@ -319,10 +358,17 @@ final class ServiceBuilder {
                 .addParameter(TypeNames.MESSAGE_METADATA, "metadata")
                 .addException(TypeNames.EXCEPTION);
 
+        ThriftType returnType = method.returnType().getTrueType();
         if (hasReturnType) {
-            TypeName retTypeName = typeResolver.getJavaClass(method.returnType().getTrueType());
-            recv.returns(retTypeName);
-            recv.addStatement("$T result = null", retTypeName);
+            TypeName retTypeName = typeResolver.getJavaClass(returnType);
+            if (intEnums && returnType.isEnum()) {
+                recv.addAnnotation((ClassName) retTypeName);
+                recv.returns(TypeNames.INTEGER);
+                recv.addStatement("@$T $T result = null", retTypeName, TypeNames.INTEGER);
+            } else {
+                recv.returns(retTypeName);
+                recv.addStatement("$T result = null", retTypeName);
+            }
         } else {
             recv.returns(TypeName.VOID.box());
         }
@@ -342,10 +388,9 @@ final class ServiceBuilder {
                 .beginControlFlow("switch (field.fieldId)");
 
         if (hasReturnType) {
-            ThriftType type = method.returnType().getTrueType();
             recv.beginControlFlow("case 0:");
 
-            new GenerateReaderVisitor(typeResolver, recv, "result", type) {
+            new GenerateReaderVisitor(typeResolver, recv, "result", returnType, intEnums) {
                 @Override
                 protected void useReadValue(String localName) {
                     recv.addStatement("result = $N", localName);
@@ -360,7 +405,7 @@ final class ServiceBuilder {
             final String fieldName = fieldNamer.getName(field);
             recv.beginControlFlow("case $L:", field.id());
 
-            new GenerateReaderVisitor(typeResolver, recv, fieldName, field.type().getTrueType()) {
+            new GenerateReaderVisitor(typeResolver, recv, fieldName, field.type().getTrueType(), intEnums) {
                 @Override
                 protected void useReadValue(String localName) {
                     recv.addStatement("$N = $N", fieldName, localName);

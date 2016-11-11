@@ -54,6 +54,7 @@ union Attachment {
 }
 
 enum ReceiptStatus {
+  /** The message has not yet been sent. */
   UNSENT,
   SENT,
   READ

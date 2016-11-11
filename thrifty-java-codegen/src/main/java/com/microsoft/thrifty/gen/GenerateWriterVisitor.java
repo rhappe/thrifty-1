@@ -56,6 +56,11 @@ class GenerateWriterVisitor implements ThriftType.Visitor<Void> {
     private MethodSpec.Builder write;
 
     /**
+     * Whether Android @IntDef-style enums are in use.
+     */
+    private boolean intEnums;
+
+    /**
      * The name of the {@link Protocol} parameter to {@linkplain #write}.
      */
     private String proto;
@@ -85,11 +90,13 @@ class GenerateWriterVisitor implements ThriftType.Visitor<Void> {
     GenerateWriterVisitor(
             TypeResolver resolver,
             MethodSpec.Builder write,
+            boolean intEnums,
             String proto,
             String subject,
             String fieldName) {
         this.resolver = resolver;
         this.write = write;
+        this.intEnums = intEnums;
         this.proto = proto;
         nameStack.push(subject + "." + fieldName);
     }
@@ -148,13 +155,18 @@ class GenerateWriterVisitor implements ThriftType.Visitor<Void> {
 
     @Override
     public Void visitEnum(EnumType enumType) {
-        write.addStatement("$N.writeI32($L.value)", proto, nameStack.peek());
+        if (intEnums) {
+            write.addStatement("$N.writeI32($L)", proto, nameStack.peek());
+        } else {
+            write.addStatement("$N.writeI32($L.value)", proto, nameStack.peek());
+        }
         return null;
     }
 
     @Override
     public Void visitList(ListType listType) {
         visitSingleElementCollection(
+                listType,
                 listType.elementType().getTrueType(),
                 "writeListBegin",
                 "writeListEnd");
@@ -164,18 +176,21 @@ class GenerateWriterVisitor implements ThriftType.Visitor<Void> {
     @Override
     public Void visitSet(SetType setType) {
         visitSingleElementCollection(
+                setType,
                 setType.elementType().getTrueType(),
                 "writeSetBegin",
                 "writeSetEnd");
         return null;
     }
 
-    private void visitSingleElementCollection(ThriftType elementType, String beginMethod, String endMethod) {
+    private void visitSingleElementCollection(
+            ThriftType collectionType, ThriftType elementType, String beginMethod, String endMethod) {
         initCollectionHelpers();
         String tag = "item" + scopeLevel;
         String item = nameAllocator.newName(tag, tag);
 
-        TypeName javaClass = resolver.getJavaClass(elementType);
+        ParameterizedTypeName collectionTypeName = (ParameterizedTypeName) resolver.getJavaClass(collectionType);
+        TypeName javaClass = collectionTypeName.typeArguments.get(0);
         byte typeCode = resolver.getTypeCode(elementType);
         if (typeCode == TType.ENUM) {
             typeCode = TType.I32;
@@ -212,6 +227,7 @@ class GenerateWriterVisitor implements ThriftType.Visitor<Void> {
         String entryName = nameAllocator.newName(entryTag, entryTag);
         String keyName = nameAllocator.newName(keyTag, keyTag);
         String valueName = nameAllocator.newName(valueTag, valueTag);
+
         ThriftType kt = mapType.keyType().getTrueType();
         ThriftType vt = mapType.valueType().getTrueType();
 
@@ -234,8 +250,9 @@ class GenerateWriterVisitor implements ThriftType.Visitor<Void> {
                 TypeNames.getTypeCodeName(valTypeCode),
                 nameStack.peek());
 
-        TypeName keyTypeName = resolver.getJavaClass(kt);
-        TypeName valueTypeName = resolver.getJavaClass(vt);
+        ParameterizedTypeName mapTypeName = (ParameterizedTypeName) resolver.getJavaClass(mapType);
+        TypeName keyTypeName = mapTypeName.typeArguments.get(0);
+        TypeName valueTypeName = mapTypeName.typeArguments.get(1);
         TypeName entry = ParameterizedTypeName.get(TypeNames.MAP_ENTRY, keyTypeName, valueTypeName);
         write.beginControlFlow("for ($T $N : $L.entrySet())", entry, entryTag, nameStack.peek());
         write.addStatement("$T $N = $N.getKey()", keyTypeName, keyName, entryName);

@@ -69,10 +69,6 @@ import javax.annotation.Nullable;
 import javax.lang.model.element.Modifier;
 import java.io.File;
 import java.io.IOException;
-import java.lang.annotation.ElementType;
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
-import java.lang.annotation.Target;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -92,6 +88,20 @@ public final class ThriftyCodeGenerator {
     private static final DateTimeFormatter DATE_FORMATTER =
             ISODateTimeFormat.dateTime().withZoneUTC();
 
+    private static final AnnotationSpec DEPRECATED = AnnotationSpec.builder(TypeNames.DEPRECATED)
+            .build();
+
+    private static final AnnotationSpec SOURCE_RETENTION = AnnotationSpec.builder(TypeNames.RETENTION)
+            .addMember("value", "$T.SOURCE", TypeNames.RETENTION_POLICY)
+            .build();
+
+    private static final AnnotationSpec INTDEF_TARGET = AnnotationSpec.builder(TypeNames.TARGET)
+            .addMember(
+                    "value",
+                    "{$1T.PARAMETER,$W$1T.METHOD,$W$1T.LOCAL_VARIABLE,$W$1T.FIELD}",
+                    TypeNames.ELEMENT_TYPE)
+            .build();
+
     private final TypeResolver typeResolver = new TypeResolver();
     private final Schema schema;
     private final FieldNamer fieldNamer;
@@ -104,16 +114,17 @@ public final class ThriftyCodeGenerator {
     private boolean emitIntEnums;
 
     public ThriftyCodeGenerator(Schema schema) {
-        this(schema, FieldNamingPolicy.DEFAULT);
+        this(schema, FieldNamingPolicy.DEFAULT, false);
     }
 
-    public ThriftyCodeGenerator(Schema schema, FieldNamingPolicy namingPolicy) {
+    public ThriftyCodeGenerator(Schema schema, FieldNamingPolicy namingPolicy, boolean emitIntEnums) {
         this(
                 schema,
                 namingPolicy,
                 ClassName.get(ArrayList.class),
                 ClassName.get(HashSet.class),
-                ClassName.get(HashMap.class));
+                ClassName.get(HashMap.class),
+                emitIntEnums);
     }
 
     private ThriftyCodeGenerator(
@@ -121,7 +132,8 @@ public final class ThriftyCodeGenerator {
             FieldNamingPolicy namingPolicy,
             ClassName listClassName,
             ClassName setClassName,
-            ClassName mapClassName) {
+            ClassName mapClassName,
+            boolean emitIntEnums) {
 
         Preconditions.checkNotNull(schema, "schema");
         Preconditions.checkNotNull(namingPolicy, "namingPolicy");
@@ -130,13 +142,15 @@ public final class ThriftyCodeGenerator {
         Preconditions.checkNotNull(mapClassName, "mapClassName");
 
         this.schema = schema;
+        this.emitIntEnums = emitIntEnums;
         this.fieldNamer = new FieldNamer(namingPolicy);
         typeResolver.setListClass(listClassName);
         typeResolver.setSetClass(setClassName);
         typeResolver.setMapClass(mapClassName);
+        typeResolver.setIntEnums(emitIntEnums);
 
         constantBuilder = new ConstantBuilder(typeResolver, schema);
-        serviceBuilder = new ServiceBuilder(typeResolver, constantBuilder, fieldNamer);
+        serviceBuilder = new ServiceBuilder(typeResolver, constantBuilder, fieldNamer, emitIntEnums);
     }
 
     public ThriftyCodeGenerator withListType(String listClassName) {
@@ -338,7 +352,7 @@ public final class ThriftyCodeGenerator {
         }
 
         if (type.isDeprecated()) {
-            structBuilder.addAnnotation(AnnotationSpec.builder(Deprecated.class).build());
+            structBuilder.addAnnotation(DEPRECATED);
         }
 
         TypeSpec builderSpec = builderFor(type, structTypeName, builderTypeName);
@@ -367,8 +381,15 @@ public final class ThriftyCodeGenerator {
             TypeName fieldTypeName = typeResolver.getJavaClass(trueType);
 
             // Define field
-            FieldSpec.Builder fieldBuilder = FieldSpec.builder(fieldTypeName, name)
-                    .addModifiers(Modifier.PUBLIC, Modifier.FINAL)
+            FieldSpec.Builder fieldBuilder;
+            if (emitIntEnums && trueType.isEnum()) {
+                fieldBuilder = FieldSpec.builder(TypeNames.INTEGER, name)
+                        .addAnnotation((ClassName) fieldTypeName);
+            } else {
+                fieldBuilder = FieldSpec.builder(fieldTypeName, name);
+            }
+
+            fieldBuilder.addModifiers(Modifier.PUBLIC, Modifier.FINAL)
                     .addAnnotation(fieldAnnotation(field));
 
             if (emitAndroidAnnotations) {
@@ -389,7 +410,7 @@ public final class ThriftyCodeGenerator {
             }
 
             if (field.isDeprecated()) {
-                fieldBuilder = fieldBuilder.addAnnotation(AnnotationSpec.builder(Deprecated.class).build());
+                fieldBuilder = fieldBuilder.addAnnotation(DEPRECATED);
             }
 
             structBuilder.addField(fieldBuilder.build());
@@ -472,6 +493,11 @@ public final class ThriftyCodeGenerator {
         for (Field field : structType.fields()) {
             String name = fieldNamer.getName(field);
             TypeName fieldType = typeResolver.getJavaClass(field.type().getTrueType());
+
+            if (emitIntEnums && field.type().isEnum()) {
+                fieldType = TypeNames.INTEGER;
+            }
+
             parcelCtor.addStatement("this.$N = ($T) in.readValue(CLASS_LOADER)", name, fieldType);
 
             parcelWriter.addStatement("dest.writeValue(this.$N)", name);
@@ -536,10 +562,19 @@ public final class ThriftyCodeGenerator {
             ThriftType fieldType = field.type().getTrueType();
             TypeName javaTypeName = typeResolver.getJavaClass(fieldType);
             String fieldName = fieldNamer.getName(field);
-            FieldSpec.Builder f = FieldSpec.builder(javaTypeName, fieldName, Modifier.PRIVATE);
+
+            FieldSpec.Builder fieldBuilder;
+            if (emitIntEnums && fieldType.isEnum()) {
+                fieldBuilder = FieldSpec.builder(TypeNames.INTEGER, fieldName)
+                        .addAnnotation((ClassName) javaTypeName);
+            } else {
+                fieldBuilder = FieldSpec.builder(javaTypeName, fieldName);
+            }
+
+            fieldBuilder.addModifiers(Modifier.PRIVATE);
 
             if (field.hasJavadoc()) {
-                f.addJavadoc(field.documentation());
+                fieldBuilder.addJavadoc(field.documentation());
             }
 
             if (field.defaultValue() != null) {
@@ -559,12 +594,20 @@ public final class ThriftyCodeGenerator {
                 resetBuilder.addStatement("this.$N = null", fieldName);
             }
 
-            builder.addField(f.build());
+            builder.addField(fieldBuilder.build());
 
             MethodSpec.Builder setterBuilder = MethodSpec.methodBuilder(fieldName)
                     .addModifiers(Modifier.PUBLIC)
-                    .returns(builderClassName)
-                    .addParameter(javaTypeName, fieldName);
+                    .returns(builderClassName);
+
+            if (emitIntEnums && fieldType.isEnum()) {
+                setterBuilder.addParameter(ParameterSpec.builder(TypeNames.INTEGER, fieldName)
+                                .addAnnotation((ClassName) javaTypeName)
+                                .build())
+                        .build();
+            } else {
+                setterBuilder.addParameter(javaTypeName, fieldName);
+            }
 
             if (field.required()) {
                 setterBuilder.beginControlFlow("if ($N == null)", fieldName);
@@ -688,7 +731,7 @@ public final class ThriftyCodeGenerator {
                     TypeNames.TTYPE,
                     typeCodeName);
 
-            tt.accept(new GenerateWriterVisitor(typeResolver, write, "protocol", "struct", fieldName));
+            tt.accept(new GenerateWriterVisitor(typeResolver, write, emitIntEnums, "protocol", "struct", fieldName));
 
             write.addStatement("protocol.writeFieldEnd()");
 
@@ -698,7 +741,8 @@ public final class ThriftyCodeGenerator {
 
             // Read
             read.beginControlFlow("case $L:", field.id());
-            new GenerateReaderVisitor(typeResolver, read, fieldName, field.type().getTrueType()).generate();
+            new GenerateReaderVisitor(typeResolver, read, fieldName, field.type().getTrueType(), emitIntEnums)
+                    .generate();
             read.endControlFlow(); // end case block
             read.addStatement("break");
         }
@@ -948,8 +992,15 @@ public final class ThriftyCodeGenerator {
                 javaType = javaType.unbox();
             }
 
-            final FieldSpec.Builder field = FieldSpec.builder(javaType, constant.name())
-                    .addModifiers(Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL);
+            final FieldSpec.Builder field;
+            if (emitIntEnums && type.isEnum()) {
+                field = FieldSpec.builder(TypeNames.INTEGER.unbox(), constant.name())
+                        .addAnnotation((ClassName) javaType);
+            } else {
+                field = FieldSpec.builder(javaType, constant.name());
+            }
+
+            field.addModifiers(Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL);
 
             if (constant.hasJavadoc()) {
                 field.addJavadoc(constant.documentation() + "\n\nGenerated from: " + constant.location());
@@ -1077,15 +1128,8 @@ public final class ThriftyCodeGenerator {
 
         TypeSpec.Builder builder = TypeSpec.annotationBuilder(enumClassName)
                 .addModifiers(Modifier.PUBLIC)
-                .addAnnotation(AnnotationSpec.builder(Retention.class)
-                        .addMember("value", "$T.SOURCE", RetentionPolicy.class)
-                        .build())
-                .addAnnotation(AnnotationSpec.builder(Target.class)
-                        .addMember(
-                                "value",
-                                "{$1T.PARAMETER,$W$1T.METHOD,$W$1T.LOCAL_VARIABLE,$W$1T.FIELD}",
-                                ElementType.class)
-                        .build());
+                .addAnnotation(SOURCE_RETENTION)
+                .addAnnotation(INTDEF_TARGET);
 
         CodeBlock.Builder intDefValuesBuilder = CodeBlock.builder();
         intDefValuesBuilder.add("{");
@@ -1095,7 +1139,7 @@ public final class ThriftyCodeGenerator {
         }
 
         if (type.isDeprecated()) {
-            builder.addAnnotation(AnnotationSpec.builder(Deprecated.class).build());
+            builder.addAnnotation(DEPRECATED);
         }
 
         MethodSpec.Builder nameOfBuilder = MethodSpec.methodBuilder("of")
@@ -1108,10 +1152,15 @@ public final class ThriftyCodeGenerator {
 
         boolean first = true;
         for (EnumMember enumMember : type.members()) {
-            builder.addField(FieldSpec.builder(TypeName.INT, enumMember.name())
+            FieldSpec.Builder fieldBuilder = FieldSpec.builder(TypeName.INT, enumMember.name())
                     .addModifiers(Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL)
-                    .initializer("$L", enumMember.value())
-                    .build());
+                    .initializer("$L", enumMember.value());
+
+            if (enumMember.hasJavadoc()) {
+                fieldBuilder.addJavadoc(enumMember.documentation());
+            }
+
+            builder.addField(fieldBuilder.build());
 
             nameOfBuilder.addStatement("case $L: return $S", enumMember.value(), enumMember.name());
 
@@ -1129,7 +1178,7 @@ public final class ThriftyCodeGenerator {
         intDefValuesBuilder.add("}");
 
         TypeSpec helper = TypeSpec.classBuilder("Names")
-                .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
+                .addModifiers(Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL)
                 .addMethod(MethodSpec.constructorBuilder()
                         .addModifiers(Modifier.PRIVATE)
                         .addComment("no instances")
@@ -1139,7 +1188,7 @@ public final class ThriftyCodeGenerator {
 
         return builder
                 .addType(helper)
-                .addAnnotation(AnnotationSpec.builder(ClassName.get("android.support.annotations", "IntDef"))
+                .addAnnotation(AnnotationSpec.builder(TypeNames.INT_DEF)
                         .addMember("value", intDefValuesBuilder.build())
                         .build())
                 .build();
@@ -1163,7 +1212,7 @@ public final class ThriftyCodeGenerator {
         }
 
         if (type.isDeprecated()) {
-            builder.addAnnotation(AnnotationSpec.builder(Deprecated.class).build());
+            builder.addAnnotation(DEPRECATED);
         }
 
         MethodSpec.Builder fromCodeMethod = MethodSpec.methodBuilder("findByValue")
@@ -1183,7 +1232,7 @@ public final class ThriftyCodeGenerator {
             }
 
             if (member.isDeprecated()) {
-                memberBuilder.addAnnotation(AnnotationSpec.builder(Deprecated.class).build());
+                memberBuilder.addAnnotation(DEPRECATED);
             }
 
             builder.addEnumConstant(name, memberBuilder.build());

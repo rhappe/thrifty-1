@@ -396,6 +396,7 @@ struct BoolTest {
 
 struct StructA {
   1: required string s;
+  2: optional Numberz numz;
 }
 
 struct StructB {

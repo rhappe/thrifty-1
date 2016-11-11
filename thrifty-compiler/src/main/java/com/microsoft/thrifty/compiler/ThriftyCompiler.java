@@ -196,7 +196,7 @@ public class ThriftyCompiler {
             return;
         }
 
-        ThriftyCodeGenerator gen = new ThriftyCodeGenerator(schema, fieldNamingPolicy);
+        ThriftyCodeGenerator gen = new ThriftyCodeGenerator(schema, fieldNamingPolicy, emitIntEnums);
         if (listTypeName != null) {
             gen = gen.withListType(listTypeName);
         }
@@ -217,7 +217,6 @@ public class ThriftyCompiler {
 
         gen.emitAndroidAnnotations(emitNullabilityAnnotations);
         gen.emitParcelable(emitParcelable);
-        gen.emitIntEnums(emitIntEnums);
 
         gen.generate(outputDirectory);
     }

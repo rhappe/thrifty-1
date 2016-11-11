@@ -294,9 +294,9 @@ public abstract class ConformanceBase {
 
     @Test
     public void testEnum() throws Throwable {
-        Numberz argument = Numberz.EIGHT;
+        @Numberz int argument = Numberz.EIGHT;
 
-        AssertingCallback<Numberz> callback = new AssertingCallback<>();
+        AssertingCallback<Integer> callback = new AssertingCallback<>();
         client.testEnum(argument, callback);
 
         assertThat(callback.getResult(), equalTo(Numberz.EIGHT));
@@ -346,12 +346,12 @@ public abstract class ConformanceBase {
                         .build()))
                 .build();
 
-        Map<Long, Map<Numberz, Insanity>> expected = ImmutableMap.<Long, Map<Numberz, Insanity>>builder()
+        Map<Long, Map<Integer, Insanity>> expected = ImmutableMap.<Long, Map<Integer, Insanity>>builder()
                 .put(1L, ImmutableMap.of(Numberz.TWO, argument, Numberz.THREE, argument))
                 .put(2L, ImmutableMap.of(Numberz.SIX, empty))
                 .build();
 
-        AssertingCallback<Map<Long, Map<Numberz, Insanity>>> callback = new AssertingCallback<>();
+        AssertingCallback<Map<Long, Map<Integer, Insanity>>> callback = new AssertingCallback<>();
         client.testInsanity(argument, callback);
 
         assertThat(callback.getResult(), equalTo(expected));
