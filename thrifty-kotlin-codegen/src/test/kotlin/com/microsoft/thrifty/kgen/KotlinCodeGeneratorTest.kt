@@ -282,9 +282,9 @@ class KotlinCodeGeneratorTest {
 
         val parcelize = ClassName("kotlinx.android.parcel", "Parcelize")
 
-        struct.annotations.any { it.type == parcelize } shouldBe true
-        anEnum.annotations.any { it.type == parcelize } shouldBe true
-        svc.annotations.any { it.type == parcelize } shouldBe false
+        struct.annotationSpecs.any { it.className == parcelize } shouldBe true
+        anEnum.annotationSpecs.any { it.className == parcelize } shouldBe true
+        svc.annotationSpecs.any { it.className == parcelize } shouldBe false
     }
 
     @Test
@@ -333,8 +333,8 @@ class KotlinCodeGeneratorTest {
             |    suspend fun doSomething(foo: Int): Int
             |}
             |
-            |class SvcClient(protocol: Protocol, listener: AsyncClientBase.Listener) : AsyncClientBase(protocol, listener),
-            |        Svc {
+            |class SvcClient(protocol: Protocol, listener: AsyncClientBase.Listener) : AsyncClientBase(protocol,
+            |        listener), Svc {
             |    override suspend fun doSomething(foo: Int): Int = suspendCoroutine { cont ->
             |        this.enqueue(DoSomethingCall(foo, object : ServiceMethodCallback<Int> {
             |            override fun onSuccess(result: Int) {
@@ -428,7 +428,8 @@ class KotlinCodeGeneratorTest {
             |            this.value = source
             |        }
             |
-            |        override fun build(): Union = value ?: error("Invalid union; at least one value is required")
+            |        override fun build(): Union = value ?:
+            |                error("Invalid union; at least one value is required")
             |
             |        override fun reset() {
             |            value = null
