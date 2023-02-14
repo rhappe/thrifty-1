@@ -41,7 +41,6 @@ class ThriftyJavaPlugin : Plugin<Project> {
         with(project.plugins) {
             apply(Plugins.JAVA)
             apply(Plugins.IDEA)
-            apply(Plugins.JACOCO)
         }
     }
 

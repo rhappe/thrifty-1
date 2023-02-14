@@ -23,7 +23,6 @@ package com.microsoft.thrifty
 object Plugins {
     const val JAVA = "java-library"
     const val IDEA = "idea"
-    const val JACOCO = "jacoco"
 
     const val KOTLIN_JVM = "org.jetbrains.kotlin.jvm"
     const val KOTLIN_MPP = "org.jetbrains.kotlin.multiplatform"
